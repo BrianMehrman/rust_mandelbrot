@@ -28,6 +28,10 @@ const fragmentShaderSource: &str = r#"
     #version 330 core
     out vec4 FragColor;
     uniform int windowSize;
+    uniform int maxIterations;
+    uniform float stepX;
+    uniform float stepY;
+    uniform float zoom;
 
     vec3 hsv2rgb(vec3 c) {
         vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
@@ -36,13 +40,15 @@ const fragmentShaderSource: &str = r#"
     }
 
     void main() {
-        vec2 c = gl_FragCoord.xy / windowSize * 4.0 - 2.0;
+        vec2 s = (gl_FragCoord.xy / windowSize * 4.0 - 2.0).xy;
 
+        vec2 c = vec2((s.x / zoom) + stepX, (s.y / zoom) + stepY);
         vec2 z = c;
-        int max_iterations = 100;
+
         int i;
-        for(i = 0; i < max_iterations; i++) {
+        for(i = 0; i < maxIterations; i++) {
             z = vec2((z.x * z.x) - (z.y * z.y), 2.0 * z.x * z.y) + c;
+
             if (length(z) > 2.0) {
                 break;
             }
@@ -51,10 +57,10 @@ const fragmentShaderSource: &str = r#"
         if (length(z) <= 2.0) {
             FragColor = vec4(0.0, 0.0, 0.0, 1.0);
         } else {
-            float val = float(i) / float(max_iterations);
-            FragColor = vec4(1.0, 1.0, 1.0, 1.0); // white
+            float val = float(i) / float(maxIterations);
+            // FragColor = vec4(1.0, 1.0, 1.0, 1.0); // white
             // FragColor = vec4(val, val, val, 1.0); // black and white
-            // FragColor = vec4(hsv2rgb(vec3(val, 1.0, 1.0)), 1.0); // trippy
+            FragColor = vec4(hsv2rgb(vec3(val, 1.0, 1.0)), 1.0); // trippy
         }
     }
 "#;
@@ -129,6 +135,13 @@ fn main() {
         gl::DeleteShader(vertexShader);
         gl::DeleteShader(fragmentShader);
 
+
+        // TODO: Zoom and Pan
+
+        // Zoom is just adding a multiplier to your x and y coordinates
+
+        // Panning is a percentage of the zoom multiplier
+
         // set up vertex data (and buffer(s)) and configre vertex attributes
         // -----------------------------------------------------------------
         // HINT: type annotation is crucial since default for float literals is f64
@@ -179,6 +192,15 @@ fn main() {
         (shaderProgram, VAO)
     };
 
+    let mut x = 0.75;
+    let mut y = 0.0;
+    let mut zoom = 1.0;
+
+    let zoom_max: f64 = 1000.0;
+    let mut keypress : bool = true;
+    let mut first : bool = false;
+    let mut second : bool = false;
+
     // render loop
     // -----------
     while !window.should_close() {
@@ -186,36 +208,69 @@ fn main() {
         // events
         // -----
 
-        process_events(&mut window, &events);
+        process_events(&mut window, &events, &mut keypress, &mut x, &mut y, &mut zoom);
 
         // render
         // ------
-        unsafe {
-            gl::ClearColor(0.2, 0.3, 0.3, 1.0);
-            gl::Clear(gl::COLOR_BUFFER_BIT);
-            let (w, h): (i32, i32) = window.get_framebuffer_size();
-            let windowSize = CString::new("windowSize").unwrap();
-            let windowSizeLocation = gl::GetUniformLocation(shaderProgram, windowSize.as_ptr());
+        if zoom > zoom_max {
+          zoom = zoom_max;
+        }
 
-            let smaller: i32 = if w >= h { h } else { w };
+        if keypress || first || second {
+            keypress = false;
+            first = false;
+            second = false;
+            unsafe {
+                gl::ClearColor(0.2, 0.3, 0.3, 1.0);
+                gl::Clear(gl::COLOR_BUFFER_BIT);
 
-            gl::Uniform1i(windowSizeLocation, smaller);
+                let windowSize = CString::new("windowSize").unwrap();
+                let stepX = CString::new("stepX").unwrap();
+                let stepY = CString::new("stepY").unwrap();
+                let maxIterations = CString::new("maxIterations").unwrap();
+                let zoomStr = CString::new("zoom").unwrap();
+                let windowSizeLocation = gl::GetUniformLocation(shaderProgram, windowSize.as_ptr());
+                let stepXLocation = gl::GetUniformLocation(shaderProgram, stepX.as_ptr());
+                let stepYLocation = gl::GetUniformLocation(shaderProgram, stepY.as_ptr());
+                let maxIterationsLocation = gl::GetUniformLocation(shaderProgram, maxIterations.as_ptr());
+                let zoomLocation = gl::GetUniformLocation(shaderProgram, zoomStr.as_ptr());
 
-            // draw out first triangle
-            gl::UseProgram(shaderProgram);
-            gl::BindVertexArray(VAO); // seeing as we only have a single VAO there's no need to bind it every time, but we'll do so to keep things a bit more organized.
-            // gl::DrawArrays(gl::TRIANGLES, 0, 3);
-            gl::DrawElements(gl::TRIANGLES, 6, gl::UNSIGNED_INT, ptr::null());
+                let (w, h): (i32, i32) = window.get_framebuffer_size();
+                let smaller: i32;
+                if w >= h {
+                    smaller = h;
+                } else {
+                    smaller= w;
+                }
+
+                let max_itrs: i32 = (100 + ((1.0f64 / zoom).log10().abs() as u32 * 8)) as i32;
+
+                gl::Uniform1i(windowSizeLocation, smaller);
+                gl::Uniform1f(stepXLocation, x as f32);
+                gl::Uniform1f(stepYLocation, y as f32);
+                gl::Uniform1f(zoomLocation, zoom as f32);
+                gl::Uniform1i(maxIterationsLocation, max_itrs);
+
+                println!("-x {} -y {} -z {} m {}", x, y, zoom, max_itrs);
+
+                // draw out first triangle
+                gl::UseProgram(shaderProgram);
+                gl::BindVertexArray(VAO); // seeing as we only have a single VAO there's no need to bind it every time, but we'll do so to keep things a bit more organized.
+                // gl::DrawArrays(gl::TRIANGLES, 0, 3);
+                gl::DrawElements(gl::TRIANGLES, 6, gl::UNSIGNED_INT, ptr::null());
+                window.swap_buffers();
+            }
         }
 
         // glfw: swap buffers and poll IO events (keys pressed/released, mouse moved etc.)
         // -------------------------------------------------------------------------------
-        window.swap_buffers();
     }
 }
 
 // NOTE: not the same version as in common.rs!
-fn process_events(window: &mut glfw::Window, events: &Receiver<(f64, glfw::WindowEvent)>) {
+fn process_events(window: &mut glfw::Window, events: &Receiver<(f64, glfw::WindowEvent)>, keypress: &mut bool, x: &mut f64, y: &mut f64, zoom: &mut f64) -> () {
+    let step:  f64 = 0.05 * (1.0 / *zoom);
+
     for (time, event) in glfw::flush_messages(events) {
         match event {
             glfw::WindowEvent::FramebufferSize(width, height) => {
@@ -227,6 +282,30 @@ fn process_events(window: &mut glfw::Window, events: &Receiver<(f64, glfw::Windo
             }
             glfw::WindowEvent::CursorPos(xpos, ypos) => window.set_title(&format!("Time: {:?}, Cursor position: ({:?}, {:?})", time, xpos, ypos)),
             glfw::WindowEvent::Key(Key::Escape, _, Action::Press, _) => window.set_should_close(true),
+            glfw::WindowEvent::Key(Key::W, _, Action::Press, _) => {
+                *keypress = true;
+                *y -= step;
+            },
+            glfw::WindowEvent::Key(Key::S, _, Action::Press, _) => {
+                *keypress = true;
+                *y += step;
+            },
+            glfw::WindowEvent::Key(Key::D, _, Action::Press, _) => {
+                *keypress = true;
+                *x -= step;
+            },
+            glfw::WindowEvent::Key(Key::A, _, Action::Press, _) => {
+                *keypress = true;
+                *x += step;
+            },
+            glfw::WindowEvent::Key(Key::E, _, Action::Press, _) => {
+                *keypress = true;
+                *zoom *= 1.2;
+            },
+            glfw::WindowEvent::Key(Key::Q, _, Action::Press, _) => {
+                *keypress = true;
+                *zoom *= 0.8;
+            },
             _ => {}
         }
     }
